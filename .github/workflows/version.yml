@@ -43,7 +43,11 @@ jobs:
           fi
 
           echo "new_version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
-          git push && git push --tags
+
+          git push
+          if [ "${{ steps.bump.outputs.bump_type }}" != "patch" ]; then
+            git push --tags
+          fi
 
       - name: Create GitHub Release
         if: steps.bump.outputs.bump_type != 'patch'
