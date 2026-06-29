@@ -13,3 +13,5 @@ Merge a PR to main with one of these in the title:
 Releases and tags are created automatically.
 
 Change 1
+Change 2
+
