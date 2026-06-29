@@ -11,3 +11,5 @@ Merge a PR to main with one of these in the title:
 - `#major` → major bump (1.0.0)
 
 Releases and tags are created automatically.
+
+Change 1
