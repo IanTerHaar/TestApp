@@ -13,13 +13,13 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4.2.2
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4.4.0
+        uses: actions/setup-node@v4
         with:
           node-version: 22
 
@@ -46,12 +46,10 @@ jobs:
           git push && git push --tags
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2.3.2
-        with:
-          tag_name: v${{ steps.bump.outputs.new_version }}
-          name: v${{ steps.bump.outputs.new_version }}
-          body: |
-            **Bump type:** ${{ steps.bump.outputs.bump_type }}
-            **Triggered by:** ${{ github.event.head_commit.message }}
+        run: |
+          gh release create v${{ steps.bump.outputs.new_version }} \
+            --title "v${{ steps.bump.outputs.new_version }}" \
+            --notes "**Bump type:** ${{ steps.bump.outputs.bump_type }}
+          **Triggered by:** ${{ github.event.head_commit.message }}"
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
