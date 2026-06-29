@@ -35,8 +35,8 @@ jobs:
       - name: Bump version
         id: bump
         run: |
-          git config user.name "Ian's Versions [bot]"
-          git config user.email "Ian's Versions [bot]@users.noreply.github.com"
+          git config user.name "ian-s-version-bot[bot]"
+          git config user.email "ian-s-version-bot[bot]@users.noreply.github.com"
 
           MESSAGE="${{ github.event.head_commit.message }}"
 
