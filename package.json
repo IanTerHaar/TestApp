@@ -1,0 +1,8 @@
+{
+  "name": "testapp",
+  "version": "0.0.0",
+  "scripts": {
+    "test": "echo 'no tests'"
+  },
+  "private": true
+}

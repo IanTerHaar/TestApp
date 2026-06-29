@@ -1,0 +1,57 @@
+name: Version & Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  bump-and-release:
+    name: Bump Version & Create Release
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, 'chore: bump version')"
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Bump version
+        id: bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          MESSAGE="${{ github.event.head_commit.message }}"
+
+          if echo "$MESSAGE" | grep -q "#major"; then
+            npm version major -m "chore: bump version to %s"
+            echo "bump_type=major" >> $GITHUB_OUTPUT
+          elif echo "$MESSAGE" | grep -q "#minor"; then
+            npm version minor -m "chore: bump version to %s"
+            echo "bump_type=minor" >> $GITHUB_OUTPUT
+          else
+            npm version patch -m "chore: bump version to %s"
+            echo "bump_type=patch" >> $GITHUB_OUTPUT
+          fi
+
+          echo "new_version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+          git push && git push --tags
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.bump.outputs.new_version }}
+          name: v${{ steps.bump.outputs.new_version }}
+          body: |
+            **Bump type:** ${{ steps.bump.outputs.bump_type }}
+            **Triggered by:** ${{ github.event.head_commit.message }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
