@@ -85,9 +85,9 @@ jobs:
             attempt=$((attempt + 1))
           done
 
-      # 4. Create GitHub Release using your ruleset-exempt app token
+      # 4. Create GitHub Release using your ruleset-exempt app token (major bumps only)
       - name: Create GitHub Release
-        if: steps.bump.outputs.bump_type != 'patch'
+        if: steps.bump.outputs.bump_type == 'major'
         run: |
           gh release create v${{ steps.bump.outputs.new_version }} \
             --title "v${{ steps.bump.outputs.new_version }}" \
