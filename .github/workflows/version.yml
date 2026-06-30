@@ -8,8 +8,12 @@ jobs:
   bump-and-release:
     name: Bump Version & Create Release
     runs-on: ubuntu-latest
-    # Prevent the workflow from running if the commit was made by your new bot
-    if: "!contains(github.triggering_actor, 'versionator-9000[bot]')"
+    # Prevent the workflow from running on the bot's own version bump commits.
+    # The commit message includes [skip ci] which GitHub honors, but we also
+    # guard here in case [skip ci] is stripped or the actor pushes manually.
+    if: >-
+      !contains(github.event.head_commit.message, 'chore: bump version to') &&
+      !contains(github.triggering_actor, 'versionator-9000')
     steps:
       # 1. Generate the installation access token for your GitHub App ruleset bypass
       - name: Generate GitHub App Token
@@ -35,28 +39,51 @@ jobs:
       - name: Bump version
         id: bump
         run: |
+          set -e
           git config user.name "versionator-9000[bot]"
           git config user.email "versionator-9000[bot]@users.noreply.github.com"
 
           MESSAGE="${{ github.event.head_commit.message }}"
 
           if echo "$MESSAGE" | grep -q "#major"; then
-            npm version major -m "chore: bump version to %s"
-            echo "bump_type=major" >> $GITHUB_OUTPUT
+            BUMP=major
           elif echo "$MESSAGE" | grep -q "#minor"; then
-            npm version minor -m "chore: bump version to %s"
-            echo "bump_type=minor" >> $GITHUB_OUTPUT
+            BUMP=minor
           else
-            npm version patch -m "chore: bump version to %s"
-            echo "bump_type=patch" >> $GITHUB_OUTPUT
+            BUMP=patch
           fi
 
-          echo "new_version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
-
-          git push
-          if [ "$(cat $GITHUB_OUTPUT | grep bump_type | cut -d'=' -f2)" != "patch" ]; then
-            git push --tags
+          # [skip ci] prevents this commit from re-triggering the workflow.
+          # Patches are intentionally NOT tagged; only minor/major create tags.
+          if [ "$BUMP" = "patch" ]; then
+            npm --no-git-tag-version version patch
+            NEW_VERSION="$(node -p "require('./package.json').version")"
+            git commit -a -m "chore: bump version to v${NEW_VERSION} [skip ci]"
+            PUSH_ARGS=""
+          else
+            npm version "$BUMP" -m "chore: bump version to %s [skip ci]"
+            NEW_VERSION="$(node -p "require('./package.json').version")"
+            PUSH_ARGS="--follow-tags"
           fi
+
+          echo "bump_type=$BUMP" >> $GITHUB_OUTPUT
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+
+          # Push with retry: if the remote has moved ahead, rebase our bump
+          # commit on top and try again. For minor/major, --follow-tags pushes
+          # the new annotated tag atomically with the commit.
+          attempt=1
+          max_attempts=5
+          until git push $PUSH_ARGS; do
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "Push failed after $max_attempts attempts" >&2
+              exit 1
+            fi
+            echo "Push rejected (attempt $attempt/$max_attempts). Rebasing onto origin/${GITHUB_REF_NAME} and retrying..."
+            git fetch origin "$GITHUB_REF_NAME"
+            git rebase "origin/$GITHUB_REF_NAME"
+            attempt=$((attempt + 1))
+          done
 
       # 4. Create GitHub Release using your ruleset-exempt app token
       - name: Create GitHub Release
