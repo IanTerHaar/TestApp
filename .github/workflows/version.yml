@@ -1,19 +1,19 @@
-name: Version & Release
+name: Tag & Release
 
 on:
   push:
     branches: [main]
 
 jobs:
-  bump-and-release:
-    name: Bump Version & Create Release
+  tag-and-release:
+    name: Tag & Create Release
     runs-on: ubuntu-latest
-    # Prevent the workflow from running on the bot's own version bump commits.
-    # The commit message includes [skip ci] which GitHub honors, but we also
-    # guard here in case [skip ci] is stripped or the actor pushes manually.
+    # Defensive guard: the bot should never push directly to main (PRs only),
+    # but skip anyway if the triggering actor is the versionator bot.
     if: >-
-      !contains(github.event.head_commit.message, 'chore: bump version to') &&
       !contains(github.triggering_actor, 'versionator-9000')
+    permissions:
+      contents: write
     steps:
       # 1. Generate the installation access token for your GitHub App ruleset bypass
       - name: Generate GitHub App Token
@@ -23,72 +23,87 @@ jobs:
           app-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_PRIVATE_KEY }}
 
-      # 2. Checkout using your ruleset-exempt app token
+      # 2. Checkout using your ruleset-exempt app token; fetch full history,
+      # then force-fetch tags so the prune/compare logic sees every tag.
       - name: Checkout
         uses: actions/checkout@v4
         with:
           token: ${{ steps.app-token.outputs.token }}
           fetch-depth: 0
 
+      - name: Fetch tags
+        run: git fetch --tags --force
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      # 3. Bump version using the Bot's Git identity
-      - name: Bump version
-        id: bump
+      # 3. Detect bump type by comparing package.json against the latest tag.
+      # The version bump commit itself is produced by pr-version.yml before
+      # the PR merges, so package.json is already updated when we get here.
+      - name: Determine bump type
+        id: detect
         run: |
           set -e
+          CURRENT="$(node -p "require('./package.json').version")"
+          LATEST_TAG="$(git tag --sort=-v:refname | head -n1)"
+
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_VERSION="0.0.0"
+            BUMP="major"
+          else
+            LATEST_VERSION="${LATEST_TAG#v}"
+            IFS='.' read -r CUR_MAJOR CUR_MINOR CUR_PATCH <<< "$CURRENT"
+            IFS='.' read -r LAT_MAJOR LAT_MINOR LAT_PATCH <<< "$LATEST_VERSION"
+
+            if [ "$CUR_MAJOR" -gt "$LAT_MAJOR" ]; then
+              BUMP="major"
+            elif [ "$CUR_MAJOR" -eq "$LAT_MAJOR" ] && [ "$CUR_MINOR" -gt "$LAT_MINOR" ]; then
+              BUMP="minor"
+            elif [ "$CUR_MAJOR" -eq "$LAT_MAJOR" ] && [ "$CUR_MINOR" -eq "$LAT_MINOR" ] && [ "$CUR_PATCH" -gt "$LAT_PATCH" ]; then
+              BUMP="patch"
+            else
+              BUMP="none"
+            fi
+          fi
+
+          echo "Current: $CURRENT | Latest tag: ${LATEST_TAG:-<none>} | Bump: $BUMP"
+          echo "bump_type=$BUMP" >> $GITHUB_OUTPUT
+          echo "new_version=$CURRENT" >> $GITHUB_OUTPUT
+          echo "latest_version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+
+      # 4. Create and push the annotated tag for minor/major bumps.
+      # Patches are intentionally NOT tagged.
+      - name: Create and push tag
+        if: steps.detect.outputs.bump_type == 'minor' || steps.detect.outputs.bump_type == 'major'
+        run: |
+          set -e
+          NEW_VERSION="${{ steps.detect.outputs.new_version }}"
+
           git config user.name "versionator-9000[bot]"
           git config user.email "versionator-9000[bot]@users.noreply.github.com"
 
-          MESSAGE="${{ github.event.head_commit.message }}"
+          git tag -a "v${NEW_VERSION}" -m "chore: bump version to v${NEW_VERSION}"
 
-          if echo "$MESSAGE" | grep -q "#major"; then
-            BUMP=major
-          elif echo "$MESSAGE" | grep -q "#minor"; then
-            BUMP=minor
-          else
-            BUMP=patch
-          fi
-
-          # [skip ci] prevents this commit from re-triggering the workflow.
-          # Patches are intentionally NOT tagged; only minor/major create tags.
-          if [ "$BUMP" = "patch" ]; then
-            npm --no-git-tag-version version patch
-            NEW_VERSION="$(node -p "require('./package.json').version")"
-            git commit -a -m "chore: bump version to v${NEW_VERSION} [skip ci]"
-            PUSH_ARGS=""
-          else
-            npm version "$BUMP" -m "chore: bump version to %s [skip ci]"
-            NEW_VERSION="$(node -p "require('./package.json').version")"
-            PUSH_ARGS="--follow-tags"
-          fi
-
-          echo "bump_type=$BUMP" >> $GITHUB_OUTPUT
-          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-
-          # Push with retry: if the remote has moved ahead, rebase our bump
-          # commit on top and try again. For minor/major, --follow-tags pushes
-          # the new annotated tag atomically with the commit.
+          # Push with retry: re-fetch tags between attempts in case the remote
+          # tag list has shifted underneath us.
           attempt=1
           max_attempts=5
-          until git push $PUSH_ARGS; do
+          until git push origin "v${NEW_VERSION}"; do
             if [ "$attempt" -ge "$max_attempts" ]; then
-              echo "Push failed after $max_attempts attempts" >&2
+              echo "Tag push failed after $max_attempts attempts" >&2
               exit 1
             fi
-            echo "Push rejected (attempt $attempt/$max_attempts). Rebasing onto origin/${GITHUB_REF_NAME} and retrying..."
-            git fetch origin "$GITHUB_REF_NAME"
-            git rebase "origin/$GITHUB_REF_NAME"
+            echo "Push rejected (attempt $attempt/$max_attempts). Re-fetching tags and retrying..."
+            git fetch --tags --force
             attempt=$((attempt + 1))
           done
 
-      # 4. Prune old tags — keep only the 10 most recent (by creation date).
+      # 5. Prune old tags — keep only the 10 most recent (by creation date).
       # Runs only when a new tag was created (minor/major bumps).
       - name: Prune old tags
-        if: steps.bump.outputs.bump_type != 'patch'
+        if: steps.detect.outputs.bump_type == 'minor' || steps.detect.outputs.bump_type == 'major'
         run: |
           set -e
           KEEP=10
@@ -120,13 +135,13 @@ jobs:
           # Then delete locally.
           git tag -d "${OLD_TAGS[@]}"
 
-      # 5. Create GitHub Release using your ruleset-exempt app token (major bumps only)
+      # 6. Create GitHub Release using your ruleset-exempt app token (major bumps only)
       - name: Create GitHub Release
-        if: steps.bump.outputs.bump_type == 'major'
+        if: steps.detect.outputs.bump_type == 'major'
         run: |
-          gh release create v${{ steps.bump.outputs.new_version }} \
-            --title "v${{ steps.bump.outputs.new_version }}" \
-            --notes "**Bump type:** ${{ steps.bump.outputs.bump_type }}
+          gh release create v${{ steps.detect.outputs.new_version }} \
+            --title "v${{ steps.detect.outputs.new_version }}" \
+            --notes "**Bump type:** major
           **Triggered by:** ${{ github.event.head_commit.message }}"
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}

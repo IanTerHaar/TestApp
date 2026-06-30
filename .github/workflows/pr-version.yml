@@ -1,0 +1,122 @@
+name: PR Version Bump
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [main]
+
+jobs:
+  bump-pr-version:
+    name: Bump Version on PR Branch
+    runs-on: ubuntu-latest
+    # Skip fork PRs (we can't push back to forks) and skip pushes
+    # made by the bot itself (avoids loops from synchronize events
+    # triggered by our own version-bump pushes).
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name &&
+      !contains(github.triggering_actor, 'versionator-9000')
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      # 1. Generate the installation access token for your GitHub App ruleset bypass
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+
+      # 2. Checkout the PR head branch using your ruleset-exempt app token
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # 3. Bump version on the PR branch using the Bot's Git identity.
+      # We never rewrite history here — every bump is a new commit stacked on
+      # top of the PR branch. Only the most recent bump determines the version
+      # at merge time, but local clones of the PR branch always stay in sync.
+      # As an optimization, we skip if the most recent bot bump on the branch
+      # already used the same bump type (e.g., cosmetic title edits that don't
+      # change #major/#minor produce no churn).
+      - name: Bump version
+        id: bump
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -e
+          git config user.name "versionator-9000[bot]"
+          git config user.email "versionator-9000[bot]@users.noreply.github.com"
+
+          if echo "$PR_TITLE" | grep -q "#major"; then
+            BUMP=major
+          elif echo "$PR_TITLE" | grep -q "#minor"; then
+            BUMP=minor
+          else
+            BUMP=patch
+          fi
+
+          # No-op guard: walk back through consecutive bot bump commits at HEAD
+          # and find the most recent bump type. If it matches what we'd do now,
+          # there is nothing to do — skip cleanly.
+          BOT_EMAIL="versionator-9000[bot]@users.noreply.github.com"
+          LAST_BOT_BUMP=""
+          i=0
+          while true; do
+            SUBJ="$(git log -1 --pretty=%s "HEAD~${i}" 2>/dev/null || true)"
+            EMAIL="$(git log -1 --pretty=%ae "HEAD~${i}" 2>/dev/null || true)"
+            if [ -z "$SUBJ" ]; then break; fi
+            if [ "$EMAIL" = "$BOT_EMAIL" ] \
+              && echo "$SUBJ" | grep -Eq '^chore: bump version to v.* \((major|minor|patch)\) \[skip ci\]$'; then
+              LAST_BOT_BUMP="$(echo "$SUBJ" | sed -E 's/^.*\((major|minor|patch)\).*$/\1/')"
+              break
+            fi
+            # Stop scanning once we hit a non-bot commit (don't skip over user work).
+            break
+          done
+
+          if [ -n "$LAST_BOT_BUMP" ] && [ "$LAST_BOT_BUMP" = "$BUMP" ]; then
+            echo "Most recent bot bump on this branch is already '${BUMP}'. Nothing to do."
+            echo "skipped=1" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Never create tags on PR branches — tags are created when merged into main.
+          npm --no-git-tag-version version "$BUMP"
+          NEW_VERSION="$(node -p "require('./package.json').version")"
+
+          # Bump type is embedded in the commit subject so future runs of this
+          # workflow can detect it without re-parsing the PR title.
+          # [skip ci] prevents this commit from re-triggering other CI workflows;
+          # this workflow itself is guarded by the triggering_actor check above.
+          git commit -a -m "chore: bump version to v${NEW_VERSION} (${BUMP}) [skip ci]"
+
+          echo "bump_type=$BUMP" >> $GITHUB_OUTPUT
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "skipped=0" >> $GITHUB_OUTPUT
+
+          # Plain push with retry. We never rewrite history, so no force-push
+          # is needed. If the remote has moved ahead, rebase our bump commit
+          # onto it and try again.
+          attempt=1
+          max_attempts=5
+          until git push origin "HEAD:${PR_HEAD_REF}"; do
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "Push failed after $max_attempts attempts" >&2
+              exit 1
+            fi
+            echo "Push rejected (attempt $attempt/$max_attempts). Rebasing onto origin/${PR_HEAD_REF} and retrying..."
+            git fetch origin "$PR_HEAD_REF"
+            git rebase "origin/${PR_HEAD_REF}"
+            attempt=$((attempt + 1))
+          done
