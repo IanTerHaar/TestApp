@@ -22,3 +22,4 @@ Minor Test
 major
 fe
 testing
+tests
