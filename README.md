@@ -22,3 +22,4 @@ major
 fe
 testing
 tests
+prune
