@@ -10,6 +10,7 @@ Open a PR against `main` with one of these in the **PR title**:
 - `#minor` → minor bump (0.1.0)
 - `#major` → major bump (1.0.0)
 
+test
 When the PR is opened/updated/retitled, a workflow bumps `package.json`
 and commits the new version to the **PR's source branch** (so the bump is
 part of the merged history). If you change the PR title, the previous
