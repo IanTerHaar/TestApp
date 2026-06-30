@@ -9,7 +9,7 @@ jobs:
     name: Bump Version & Create Release
     runs-on: ubuntu-latest
     # Prevent the workflow from running if the commit was made by your new bot
-    if: "!contains(github.triggering_actor, 'versionator-9000')"
+    if: "!contains(github.triggering_actor, 'versionator-9000[bot]')"
     steps:
       # 1. Generate the installation access token for your GitHub App ruleset bypass
       - name: Generate GitHub App Token
