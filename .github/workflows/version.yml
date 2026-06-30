@@ -85,7 +85,42 @@ jobs:
             attempt=$((attempt + 1))
           done
 
-      # 4. Create GitHub Release using your ruleset-exempt app token (major bumps only)
+      # 4. Prune old tags — keep only the 10 most recent (by creation date).
+      # Runs only when a new tag was created (minor/major bumps).
+      - name: Prune old tags
+        if: steps.bump.outputs.bump_type != 'patch'
+        run: |
+          set -e
+          KEEP=10
+
+          # Ensure local tag list matches the remote so we don't miss any.
+          git fetch --tags --prune --prune-tags origin
+
+          # List all tags newest-first by creation date, skip the first $KEEP,
+          # the rest are candidates for deletion.
+          mapfile -t OLD_TAGS < <(
+            git for-each-ref --sort=-creatordate --format='%(refname:short)' refs/tags \
+              | tail -n +$((KEEP + 1))
+          )
+
+          if [ "${#OLD_TAGS[@]}" -eq 0 ]; then
+            echo "No tags to prune (have $(git tag | wc -l), keeping $KEEP)."
+            exit 0
+          fi
+
+          echo "Pruning ${#OLD_TAGS[@]} old tag(s): ${OLD_TAGS[*]}"
+
+          # Delete on the remote in one atomic push (refspecs prefixed with ':').
+          REFSPECS=()
+          for tag in "${OLD_TAGS[@]}"; do
+            REFSPECS+=(":refs/tags/${tag}")
+          done
+          git push origin "${REFSPECS[@]}"
+
+          # Then delete locally.
+          git tag -d "${OLD_TAGS[@]}"
+
+      # 5. Create GitHub Release using your ruleset-exempt app token (major bumps only)
       - name: Create GitHub Release
         if: steps.bump.outputs.bump_type == 'major'
         run: |
